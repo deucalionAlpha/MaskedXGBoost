@@ -1,4 +1,4 @@
-# Code for "MaskedXGBoost: Privacy-preserving Federated XGBoost with Differential Privacy Guarantee"
+# MaskedXGBoost
 
 This repository contains code for the 2024 IEEE S&P paper "MaskedXGBoost: Privacy-preserving Federated XGBoost with Differential Privacy Guarantee".
 MaskedXGBoost is built based on [FedTree](https://github.com/Xtra-Computing/FedTree), which is a federated XGBoost library.
