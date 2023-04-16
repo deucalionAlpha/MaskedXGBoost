@@ -77,8 +77,8 @@ make -j
 # under 'MaskedXGBoost' directory
 ./build/bin/FedTree-train ./examples/masked_example.conf
 ```
-
-
+# Run with Python
+Refer to ./python/
 
 # Citation
 TBD.

@@ -29,18 +29,17 @@ Save the FedTree model to model_path.
 Load the FedTree model from model_path.
 
 ## Examples
-Users can simply input parameters to these classes, call ```fit()``` and ```predict``` functions like models in scikit-learn.
+Users can simply input parameters to these classes, call ```fit()```like models in scikit-learn.
 
 ```bash
-from fedtree import FLRegressor
-from sklearn.metrics import mean_squared_error
-from sklearn.datasets import load_svmlight_file
-x, y = load_svmlight_file("../dataset/test_dataset.txt")
-clf = FLRegressor(n_trees=10, n_parties=2, mode="horizontal", learning_rate=0.2, max_depth=4, objective="reg:linear")
+from fedtree import FLClassifier
+from dataloader import DataLoader
+
+
+dataloader = DataLoader()
+x,x_test, y, y_test = dataloader.load_datasets(["maskedxgb"], return_dict=False)[0]
+clf = FLClassifier(n_trees=1, n_parties=2, mode="vertical", partition_mode="vertical", learning_rate=0.8, max_depth=6, objective="binary:logistic", variance = 0)
 clf.fit(x, y)
-y_pred = clf.predict(x)
-rmse = mean_squared_error(y, y_pred, squared=False)
-print("rmse:", rmse)
 ```
 
-Under ```examples``` directory, you can find three examples on how to use FedTree with Python.
+You can find maskedxgb.py on how to use MaskedXGBoost with Python.
