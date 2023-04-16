@@ -1,0 +1,12 @@
+Metadata-Version: 1.1
+Name: fedtree
+Version: 1.0.4
+Summary: A federated learning library for trees
+Home-page: https://github.com/Xtra-Computing/FedTree
+Author: UNKNOWN
+Author-email: UNKNOWN
+License: Apache-2.0
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: Apache Software License
