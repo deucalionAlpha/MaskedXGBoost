@@ -5,7 +5,6 @@ MaskedXGBoost is built based on [FedTree](https://github.com/Xtra-Computing/FedT
 
 
 # Getting Started
-You can refer to our primary documentation [here](https://fedtree.readthedocs.io/en/latest/index.html).
 ## Prerequisites
 * [CMake](https://cmake.org/) 3.15 or above
 * [GMP](https://gmplib.org/)
