@@ -10,6 +10,7 @@ MaskedXGBoost is built based on [FedTree](https://github.com/Xtra-Computing/FedT
 * [GMP](https://gmplib.org/)
 * [NTL](https://libntl.org/)
 * [gRPC](https://grpc.io/docs/languages/cpp/quickstart/) 1.50.0
+* [Eigen](http://eigen.tuxfamily.org/index.php?title=Main_Page) 3
 
 You can follow the following commands to install NTL library.
 

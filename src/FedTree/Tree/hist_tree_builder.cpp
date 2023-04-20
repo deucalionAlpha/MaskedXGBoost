@@ -3,7 +3,6 @@
 #include "FedTree/util/cub_wrapper.h"
 //#include "FedTree/util/device_lambda.h"
 #include "thrust/iterator/counting_iterator.h"
-
 #include "thrust/iterator/discard_iterator.h"
 #include "thrust/sequence.h"
 #include "thrust/binary_search.h"
@@ -12,10 +11,7 @@
 #include "FedTree/common.h"
 #include <math.h>
 #include <algorithm>
-
-#include <math.h>
 #include <iterator>
-#include <algorithm>
 #include <random>
 #include <eigen3/Eigen/Dense>
 
@@ -541,12 +537,40 @@ void HistTreeBuilder::find_split_by_predefined_features(int level) {
 
 
 
-void HistTreeBuilder::matrix_buildnoise(int n_instances, int all_splits, Eigen::MatrixXd allMatrix, Eigen::MatrixXd &noise_vectors){
-    int m = 1;
-    // 
+void HistTreeBuilder::matrix_buildnoise(int n_instances, Eigen::MatrixXd &noise_vector, vector<int> activeset, vector<int> inactiveset, double sigma1, double sigma2){
+    // int W = 1;
+    // double constrain = 100;
+    MatrixXd active_noise, inactive_noise, disturb_noise(1,n_instances);
+    active_noise = MatrixXd::Zero(1,n_instances); 
+    inactive_noise = MatrixXd::Zero(1,n_instances); 
+    vector<double> active_vector(activeset.size());
+    
+    std::default_random_engine generator;
+    std::normal_distribution<double> active_noise_dis(0.0, sigma1);
+    std::normal_distribution<double> inactive_noise_dis(0.0, sqrt(2) * sigma1);
+    std::normal_distribution<double> disturb_noise_dis(0.0, sigma2);
+    #pragma omp parallel for
+    for (int i = 0; i < inactiveset.size(); i++){
+        inactive_noise(0,inactiveset[i]) = inactive_noise_dis(generator);
+    }
+    #pragma omp parallel for
+    for (int i = 0; i < n_instances; i++)
+        disturb_noise(0,i) = disturb_noise_dis(generator);
+    #pragma omp parallel for
+    for (int i = 0; i < activeset.size(); i++){
+        active_vector[i] = active_noise_dis(generator);
+    }
+    #pragma omp parallel for
+    for (int i = 0; i < activeset.size(); i++){
+        if(i==0)
+            active_noise(0,activeset[0]) = active_vector[0] - active_vector[activeset.size()-1];
+        else
+            active_noise(0,activeset[i]) = active_vector[i] - active_vector[i-1];
+    }    
+    noise_vector = inactive_noise + disturb_noise + active_noise;
 }
 
-//MaskedXGBoost
+
 void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int level, int &index, int all_bins, SyncArray<GHPair> &missing_gh, int n_bins, int *hist_fid){
     auto compute_gain = []__host__(double sum_g, double sum_h, double leftg, double lefth, double rightg, double righth, float_type min_child_weight, float_type lambda) -> double {
             if (lefth >= min_child_weight && righth >= min_child_weight)
@@ -555,7 +579,7 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
             else
                 return 0;         
     };
-    double sigma2 = this->variance;
+    double sigma2 = this->variance, sigma1 = 1000; //todo
     int n_nodes_in_level = 1 << level;
     int nid_offset = static_cast<int>(pow(2, level) - 1);
 
@@ -588,21 +612,31 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
         training_time = stop - smm_start;
         LOG(INFO) << "0 timeslot = " << training_time.count() << "s";
 
+        vector<vector<int>> activesets(all_splits);
+        vector<vector<int>> inactivesets(all_splits);
         // build feature vectors M
         #pragma omp parallel for
         for(int fid = 0; fid < n_column; fid++){ // features
             for(int bin = 0; bin < cut_col_ptr_data[fid+1] - cut_col_ptr_data[fid] ; bin++){ 
                 // real bins for feature cut_col_ptr_data[fid+1] - cut_col_ptr_data[fid]
-                for(int iid = 0; iid < n_instances; iid++) { 
+                for(int iid = 0; iid < n_instances; iid++) {
                     int bid = dense_bin_id_data[iid * n_column + fid];
-                    // this->AllsplitMatrix(iid, bin + cut_col_ptr_data[fid]) = bid<=bin?1:0; //sparse matrix 按行遍历的，改成列遍历
-                    splitMatrix(iid, bin + cut_col_ptr_data[fid]) = bid<=bin?1:0; 
+                    //this->AllsplitMatrix(iid, bin + cut_col_ptr_data[fid]) = bid<=bin?1:0; //sparse matrix, columan read
+                    //splitMatrix(iid, bin + cut_col_ptr_data[fid]) = bid<=bin?1:0;
+                    if(bid<=bin){
+                        splitMatrix(iid, bin + cut_col_ptr_data[fid]) = 1;
+                        activesets[bin + cut_col_ptr_data[fid]].push_back(iid);
+                    }
+                    else{
+                        splitMatrix(iid, bin + cut_col_ptr_data[fid]) = 0;
+                        inactivesets[bin + cut_col_ptr_data[fid]].push_back(iid);
+                    }
                 }
             }
         } 
-        stop = timer.now();
-        training_time = stop - smm_start;
-        LOG(INFO) << "Build Split Matrix timeslot = " << training_time.count() << "s";
+        // stop = timer.now();
+        // training_time = stop - smm_start;
+        // LOG(INFO) << "Build Split Matrix timeslot = " << training_time.count() << "s";
 
         double sum_g = 0, sum_h = 0;
         auto gh_data = gh_pair.host_data();
@@ -610,53 +644,42 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
         for(int j = 0; j < n_instances; j++){
             ghpair(0,j) = gh_data[j].g;
             ghpair(1,j) = gh_data[j].h;
-            sum_g += gh_data[j].g; sum_h += gh_data[j].h; //todo 向量1 norm 但是其实耗时也不大
+            sum_g += gh_data[j].g; sum_h += gh_data[j].h; //todo 1 norm 
         }
 
-        stop = timer.now();
-        training_time = stop - smm_start;
-        LOG(INFO) << "GH prepare timeslot = " << training_time.count() << "s";
+        // stop = timer.now();
+        // training_time = stop - smm_start;
+        // LOG(INFO) << "GH prepare timeslot = " << training_time.count() << "s";
         vector<double> rightg(all_splits,0), righth(all_splits,0), res_matrix(all_splits,0);
-
-        std::srand(static_cast<unsigned int>(std::time(nullptr)));
-        MatrixXd noise_vectors = Eigen::MatrixXd::Random(1, n_instances) * sigma2;
-        //MatrixXd noise_vectors = Eigen::MatrixXd::Random(all_splits, n_instances) * sigma2;
-        // MatrixXd noise_vectors = Eigen::MatrixXd::Random(all_splits, n_instances);
-//  // Build noise_vectors n*l b_1...b_l.
-//         #pragma omp parallel for 
-//         for(int i = 0; i < all_splits; i++){
-//             for(int j = 0; j < n_instances; j++)
-//                 noise_vectors(j,i) = noise2(gen); //noise generate很慢         
-//         }        
- 
-        stop = timer.now();
-        training_time = stop - smm_start;
-        LOG(INFO) << "Mask Prepare timeslot = " << training_time.count() << "s";    
         const auto missing_gh_data = missing_gh.host_data();
         const Tree::TreeNode *nodes_data = trees.nodes.host_data();
         int n_column_2 = missing_gh.size()/n_nodes_in_level;
-        // #pragma omp parallel for 
+
+        MatrixXd noise_vectors[all_splits];
+        #pragma omp parallel for 
+        for (int i = 0; i < all_splits; i++) {
+            noise_vectors[i] = MatrixXd::Zero(1,n_instances);
+        }
+        // stop = timer.now();
+        // training_time = stop - smm_start;
+        // LOG(INFO) << "Noise Prepare timeslot = " << training_time.count() << "s";
+
+        #pragma omp parallel for 
         for(int i = 0; i < all_splits; i++){
-            /*
-            ghpair.row(0) = ghpair.row(0) + noise_vectors.col(i).transpose();
-            ghpair.row(1) = ghpair.row(1) + noise_vectors.col(i).transpose();
-            leftgh.col(i) = ghpair * allMatrix.col(i); //0.6s 差不多 
-            */
-            // leftgh.col(i) = ghpair * allMatrix.col(i); //0.55s 差不多
             int nid0 = (i+index) / n_bins;
             int nid = nid0 + nid_offset;
             int fid = hist_fid[(i+index) % n_bins];  
             int pid = nid0 * n_column_2 + fid;
             if (nodes_data[nid].is_valid){
-                leftgh(0,i) = (ghpair.row(0) + noise_vectors) * splitMatrix.col(i); 
-                leftgh(1,i) = (ghpair.row(1) + noise_vectors) * splitMatrix.col(i); //0.6s use this method for now
+                matrix_buildnoise(n_instances, noise_vectors[i], activesets[i], inactivesets[i], sigma1, sigma2);
+                leftgh(0,i) = (ghpair.row(0) + noise_vectors[i]) * splitMatrix.col(i); 
+                leftgh(1,i) = (ghpair.row(1) + noise_vectors[i]) * splitMatrix.col(i); //0.6s use this method for now
                 rightg[i] = sum_g - leftgh(0,i), righth[i] = sum_h - leftgh(1,i);  
                 GHPair p_missing_gh = missing_gh_data[pid];
                 float_type default_to_left_gain = std::max((double)0, compute_gain(sum_g, sum_h, leftgh(0,i), leftgh(1,i), rightg[i], righth[i], mcw, lambda));
-                    
+                
                 leftgh(0,i) += p_missing_gh.g;
                 leftgh(1,i) += p_missing_gh.h;
-
                 float_type default_to_right_gain = std::max((double)0, compute_gain(sum_g, sum_h, leftgh(0,i), leftgh(1,i), sum_g-leftgh(0,i), sum_h-leftgh(1,i), mcw, lambda));
 
                 if (default_to_left_gain > default_to_right_gain)
@@ -668,10 +691,9 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
                 gain_data[i+index] = 0;
             }
         }
-        stop = timer.now();
-        training_time = stop - smm_start;
-        LOG(INFO) << "Whole SMM time = " << training_time.count() << "s";
-  // */
+        // stop = timer.now();
+        // training_time = stop - smm_start;
+        // LOG(INFO) << "Whole SMM time = " << training_time.count() << "s";
     }
     else{
         // More Level
@@ -697,38 +719,41 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
         auto node_idx_data = node_idx.host_data();
         auto cut_col_ptr_data = cut.cut_col_ptr.host_data();
         auto gh_data = gh_pair.host_data();
-        // #pragma omp parallel for
 
         auto temp = timer.now();
         std::chrono::duration<float> buildsmm = temp-temp, smm_time = temp-temp;
 
-        std::srand(static_cast<unsigned int>(std::time(nullptr)));
-        MatrixXd noise_vectors = Eigen::MatrixXd::Random(1, n_instances) * sigma2; //统一生成noise
-
         // #pragma omp parallel for
-        for (int i = 0; i < n_nodes_in_level; ++i) { // 遍历每个节点的instance build split matrix 这里可能通过n_nodes_in_level/2少一部分计算。
+        for (int i = 0; i < n_nodes_in_level; ++i) {
             auto matrixstart = timer.now();
             auto idx_begin = node_ptr.host_data()[i];
             auto idx_end = node_ptr.host_data()[i+1];
             auto gh_data = gh_pair.host_data();
-            double sum_g = 0, sum_h = 0; // GHPair father_gh = nodes_data[nid].sum_gh_pair; 优化
-            // MatrixXd splitMatrix(all_splits,idx_end - idx_begin);
-            MatrixXd splitMatrix(idx_end - idx_begin, all_splits);//colmajor
+            double sum_g = 0, sum_h = 0;
+            MatrixXd splitMatrix(idx_end - idx_begin, all_splits);
             MatrixXd matrix_maskedgrad(all_splits, idx_end - idx_begin); 
             MatrixXd matrix_maskedhess(all_splits, idx_end - idx_begin);
-            MatrixXd ghpair(2,idx_end - idx_begin),leftgh(2,all_splits), rightgh(all_splits,2); // row0 g, row1 h todo 这
-            // /*
-            // #pragma omp parallel for
+            MatrixXd ghpair(2,idx_end - idx_begin),leftgh(2,all_splits), rightgh(all_splits,2); 
+            vector<vector<int>> activesets(all_splits);
+            vector<vector<int>> inactivesets(all_splits);
+            
+            #pragma omp parallel for
             for(int fid = 0; fid < n_column; fid++){ // features
                  for(int bin = 0; bin < cut_col_ptr_data[fid+1] - cut_col_ptr_data[fid] ; bin++){
                     for(int rid = 0; rid < (idx_end - idx_begin); rid++){ 
                         int iid = node_idx_data[rid + idx_begin];
                         int bid = dense_bin_id_data[iid * n_column + fid];
-                        splitMatrix(rid, bin+cut_col_ptr_data[fid]) = bid<=bin?1:0;
+                        if(bid<=bin){
+                            splitMatrix(rid, bin+cut_col_ptr_data[fid]) = 1;
+                            activesets[bin + cut_col_ptr_data[fid]].push_back(rid);
+                        }
+                        else{
+                            splitMatrix(rid, bin+cut_col_ptr_data[fid]) = 0;
+                            inactivesets[bin + cut_col_ptr_data[fid]].push_back(rid);
+                        }
                     }
                  }
             }
-            //*/
 
             auto matrixstop = timer.now();
             buildsmm += matrixstop - matrixstart;
@@ -738,27 +763,31 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
                 ghpair(0,rid) = gh_data[iid].g; ghpair(1,rid) = gh_data[iid].h;
                 sum_g += gh_data[iid].g; sum_h += gh_data[iid].h;
             }
-            //leftgh = ghpair * splitMatrix;
-            vector<double> rightg(all_splits,0), righth(all_splits,0), res_matrix(all_splits,0);
 
+            vector<double> rightg(all_splits,0), righth(all_splits,0), res_matrix(all_splits,0);
             const auto missing_gh_data = missing_gh.host_data();
             const Tree::TreeNode *nodes_data = trees.nodes.host_data();
             int n_column_2 = missing_gh.size()/n_nodes_in_level;
-            // #pragma omp parallel for 
+
+
+            MatrixXd noise_vectors[all_splits];
+            #pragma omp parallel for 
+            for (int j = 0; j < all_splits; j++) {
+                noise_vectors[j] = MatrixXd::Zero(1,idx_end - idx_begin);
+            }
+        
+            #pragma omp parallel for 
             for(int j = 0; j < all_splits; j++){
-                
                 int nid0 = (j+ i * all_bins + index) / n_bins;
                 int nid = nid0 + nid_offset;
                 int fid = hist_fid[(j+ i * all_bins + index) % n_bins];  
                 int pid = nid0 * n_column_2 + fid;
                 if (nodes_data[nid].is_valid){
-                    // leftgh.col(j) = ghpair * splitMatrix.col(j);
-                    leftgh(0,j) = (ghpair.row(0) + noise_vectors) * splitMatrix.col(j); 
-                    leftgh(1,j) = (ghpair.row(1) + noise_vectors) * splitMatrix.col(j);
+                    matrix_buildnoise(idx_end - idx_begin, noise_vectors[i], activesets[i], inactivesets[i], sigma1, sigma2);
+                    leftgh(0,j) = (ghpair.row(0) + noise_vectors[j]) * splitMatrix.col(j); 
+                    leftgh(1,j) = (ghpair.row(1) + noise_vectors[j]) * splitMatrix.col(j);
                     rightg[j] = sum_g - leftgh(0,j), righth[j] = sum_h - leftgh(1,j);
                     GHPair p_missing_gh = missing_gh_data[pid];
-
-
                     float_type default_to_left_gain = std::max((double)0, compute_gain(sum_g, sum_h, leftgh(0,j), leftgh(1,j), rightg[j], righth[j], mcw, lambda));
                     
                     leftgh(0,j) += p_missing_gh.g;
@@ -770,10 +799,6 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
                         gain_data[j+ i * all_bins + index] = default_to_left_gain;
                     else
                         gain_data[j+ i * all_bins + index] = - default_to_right_gain;
-                    // if(j+ i * all_bins + index == 0){
-                    //     //LOG(INFO) << pid << " " << all_splits << " " << n_bins << " " << n_column_2;
-                    //     LOG(INFO) << "Check SMM gain[0]" << default_to_left_gain << " " << default_to_right_gain << " " << gain_data[j+ i * all_bins + index];
-                    // }
                 }
                 else{
                     gain_data[j+ i * all_bins + index] = 0;
@@ -783,8 +808,6 @@ void HistTreeBuilder::masked_computegain_smm(SyncArray<float_type> &gain, int le
             matrixstop = timer.now();
             smm_time += matrixstop - matrixstart;
         }
-        LOG(INFO) << " Build M time = " << buildsmm.count() << "s";
-        LOG(INFO) << " SMM time = " << smm_time.count() << "s";
     }
 }
 
@@ -820,7 +843,6 @@ void HistTreeBuilder::compute_histogram_in_a_level(int level, int n_max_splits, 
             auto dense_bin_id_data = dense_bin_id.host_data();
             auto max_num_bin = param.max_num_bin;
             auto n_instances = this->n_instances;
-
             #pragma omp parallel for
             for(int fid = 0; fid < n_column; fid++){
                 for(int iid = 0; iid < n_instances; iid++) {

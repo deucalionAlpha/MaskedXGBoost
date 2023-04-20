@@ -29,7 +29,7 @@ public:
                                       SyncArray<GHPair> &missing_gh, SyncArray<GHPair> &hist) override;
 
     //Masked:
-    void matrix_buildnoise(int n_instances, int all_splits, Eigen::MatrixXd allMatrix, Eigen::MatrixXd &noise_vectors);
+    void matrix_buildnoise(int n_instances, Eigen::MatrixXd &noise_vector, vector<int> activeset, vector<int> inactiveset, double sigma1, double sigma2);
     void masked_computegain_smm(SyncArray<float_type> &gain, int level, int &index, int all_bins, SyncArray<GHPair> &missing_gh,int n_bins, int *hist_fid);
 
     void compute_histogram_in_a_node(SyncArray<GHPair> &gradients, HistCut &cut, SyncArray<unsigned char> &dense_bin_id);

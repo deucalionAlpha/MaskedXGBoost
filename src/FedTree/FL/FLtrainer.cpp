@@ -845,6 +845,7 @@ void FLtrainer::vertical_fl_trainer(vector<Party> &parties, Server &server, FLPa
 
 // in this case, server is also a party which holds both the features and the label
 void FLtrainer::masked_fl_trainer(vector<Party> &parties, Server &server, FLParam &params) {
+    LOG(INFO) << "Masked with variance " << params.variance;
     std::chrono::high_resolution_clock timer;
     auto start = timer.now();
     float encryption_time = 0.0f;
@@ -925,7 +926,7 @@ void FLtrainer::masked_fl_trainer(vector<Party> &parties, Server &server, FLPara
                 MSyncArray<int> parties_global_hist_fid(parties.size());
                 MSyncArray<GHPair> parties_hist(parties.size());
 
-                //SMM gain
+                //MaskedXGBoost gain
                 int all_bins = 0, beginindex = 0;
                 vector<int> begin_party(parties.size());
                 // each party computes hist, sends hist to server
@@ -938,8 +939,8 @@ void FLtrainer::masked_fl_trainer(vector<Party> &parties, Server &server, FLPara
                     else begin_party[pid] = begin_party[pid-1] + parties[pid-1].booster.fbuilder->cut.cut_points_val.size();
 
                 }   
-                LOG(INFO) << "all_bins :" << all_bins << " " << n_nodes_in_level;
-                LOG(INFO) <<  "begin_party  " << begin_party;
+                //LOG(INFO) << "all_bins :" << all_bins << " " << n_nodes_in_level;
+                //LOG(INFO) <<  "begin_party  " << begin_party;
                 //LOG(INFO) << "gain_smm_size :" << " "<< all_bins * n_nodes_in_level;
                 SyncArray<float_type> gain_smm(all_bins * n_nodes_in_level);
 
@@ -981,9 +982,6 @@ void FLtrainer::masked_fl_trainer(vector<Party> &parties, Server &server, FLPara
 
                     parties[pid].booster.fbuilder->sp.resize(n_nodes_in_level);
                 }
-                auto stop = timer.now();
-                std::chrono::duration<float> training_time = stop - start;
-                LOG(INFO) << "Masked SMM time = " << training_time.count() << "s";
 
                 server.booster.fbuilder->sp.resize(n_nodes_in_level);
                 // server concat hist_fid_data, missing_gh & histograms
@@ -999,22 +997,6 @@ void FLtrainer::masked_fl_trainer(vector<Party> &parties, Server &server, FLPara
                 // server compute gain
                 // SyncArray<float_type> gain(n_max_splits_new);
                 SyncArray<float_type> gain(n_nodes_in_level * n_bins_new);
-
-                if (params.privacy_tech == "he") {
-                    auto t1 = timer.now();
-                    for(int i = 0; i < n_parties; i++){
-                        if(!parties[i].has_label){
-                            server.decrypt_gh_pairs(parties_hist[i]);
-                            server.decrypt_gh_pairs(parties_missing_gh[i]);
-                        }
-                    }
-//                    server.decrypt_gh_pairs(hist);
-//                    server.decrypt_gh_pairs(missing_gh);
-                    auto t2 = timer.now();
-                    std::chrono::duration<float> t3 = t2 - t1;
-                    decryption_time += t3.count();
-                }
-
                 missing_gh.copy_from(
                         comm_helper.concat_msyncarray(parties_missing_gh, n_nodes_in_level));
                 hist.copy_from(comm_helper.concat_msyncarray(parties_hist, n_nodes_in_level));
@@ -1034,23 +1016,19 @@ void FLtrainer::masked_fl_trainer(vector<Party> &parties, Server &server, FLPara
                 
                 
                 // check smmgain 
-                server.booster.fbuilder->compute_gain_in_a_level(gain, n_nodes_in_level, n_bins_new, global_hist_fid.host_data(), missing_gh, hist);
+                // server.booster.fbuilder->compute_gain_in_a_level(gain, n_nodes_in_level, n_bins_new, global_hist_fid.host_data(), missing_gh, hist);
                 // LOG(INFO) << "Origin Gain: " << gain.size() << "\n"<< gain; 
                 // LOG(INFO) << "SMM Gain: " << gain_smm; 
                 // vector<double> error_gain(n_nodes_in_level * n_bins_new);
-                float_type *gaindata = gain.host_data(), *gain_smmdata = gain_smm.host_data();
-                double error = 0, error_max = 0;
-                for(int i = 0; i < gain.size(); i++) {
-                    double errori = fabs(fabs(gaindata[i])- fabs(gain_smmdata[i]));
-                    error += errori;
-                    if(errori > error_max) error_max = errori;
-                    // if(errori > 1){
-                    //     LOG(INFO) << "Error info: " << gaindata[i] << " " << gain_smmdata[i]; 
-                    // }
-                }
-                //LOG(INFO) << "Gain size" << gain.size() << " " << gain_smm.size();
-                LOG(INFO) << "Total Gain error: " << error;
-                LOG(INFO) << "Max Gain error for a split: " << error_max;
+                // float_type *gaindata = gain.host_data(), *gain_smmdata = gain_smm.host_data();
+                // double error = 0, error_max = 0;
+                // for(int i = 0; i < gain.size(); i++) {
+                //     double errori = fabs(fabs(gaindata[i])- fabs(gain_smmdata[i]));
+                //     error += errori;
+                //     if(errori > error_max) error_max = errori;
+                // }
+                // LOG(INFO) << "Total Gain error: " << error;
+                // LOG(INFO) << "Max Gain error for a split: " << error_max;
             
 
                 // with Exponential Mechanism: select with split probability
